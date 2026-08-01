@@ -150,21 +150,36 @@ func TestSettingsRoundTrip(t *testing.T) {
 	require.NotEmpty(t, before.Cluster, "settings must carry an assigned cluster")
 
 	flipped, err := srv.UpdateSettings(ctx, api.AgentNetworkSettingsRequest{
-		EnableLogCollection:    !before.EnableLogCollection,
-		EnablePromptCollection: !before.EnablePromptCollection,
-		RedactPii:              !before.RedactPii,
+		EnableLogCollection:    ptr(!before.EnableLogCollection),
+		EnablePromptCollection: ptr(!before.EnablePromptCollection),
 	})
 	require.NoError(t, err, "update settings")
 	assert.Equal(t, !before.EnableLogCollection, flipped.EnableLogCollection, "log collection toggle must flip")
 	assert.Equal(t, !before.EnablePromptCollection, flipped.EnablePromptCollection, "prompt collection toggle must flip")
+	assert.Equal(t, before.RedactPii, flipped.RedactPii, "omitted redact_pii must keep its current value")
 	assert.Equal(t, before.Cluster, flipped.Cluster, "cluster must be immutable across updates")
 	assert.Equal(t, before.Subdomain, flipped.Subdomain, "subdomain must be immutable across updates")
 
+	// A partial update touching one field must not disturb the others.
+	partial, err := srv.UpdateSettings(ctx, api.AgentNetworkSettingsRequest{
+		RedactPii: ptr(!before.RedactPii),
+	})
+	require.NoError(t, err, "partial update settings")
+	assert.Equal(t, !before.RedactPii, partial.RedactPii, "redact toggle must flip")
+	assert.Equal(t, flipped.EnableLogCollection, partial.EnableLogCollection, "omitted log collection must be preserved")
+	assert.Equal(t, flipped.EnablePromptCollection, partial.EnablePromptCollection, "omitted prompt collection must be preserved")
+
+	// A cluster different from the pinned one must be rejected.
+	_, err = srv.UpdateSettings(ctx, api.AgentNetworkSettingsRequest{
+		Cluster: ptr("attacker.cluster.invalid"),
+	})
+	requireClientError(t, err)
+
 	// Restore the original toggles.
 	_, err = srv.UpdateSettings(ctx, api.AgentNetworkSettingsRequest{
-		EnableLogCollection:    before.EnableLogCollection,
-		EnablePromptCollection: before.EnablePromptCollection,
-		RedactPii:              before.RedactPii,
+		EnableLogCollection:    ptr(before.EnableLogCollection),
+		EnablePromptCollection: ptr(before.EnablePromptCollection),
+		RedactPii:              ptr(before.RedactPii),
 	})
 	require.NoError(t, err, "restore settings")
 }

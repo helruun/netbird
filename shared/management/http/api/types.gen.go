@@ -2275,11 +2275,11 @@ type AgentNetworkProvider struct {
 	// Id Provider ID
 	Id string `json:"id"`
 
-	// IdentityHeaderGroups Wire header name the proxy stamps with the caller's NetBird groups as a comma-separated list (sorted) when the catalog entry's HeaderPair is `customizable`. Empty disables stamping for this dimension. Same per-catalog semantics as `identity_header_user_id`.
-	IdentityHeaderGroups *string `json:"identity_header_groups,omitempty"`
+	// IdentityHeaderGroups Wire header name the proxy stamps with the caller's NetBird groups as a comma-separated list (sorted) when the catalog entry's HeaderPair is `customizable`. Always present in responses; empty disables stamping for this dimension. Same per-catalog semantics as `identity_header_user_id`.
+	IdentityHeaderGroups string `json:"identity_header_groups"`
 
-	// IdentityHeaderUserId Wire header name the proxy stamps with the caller's display identity (user email or peer name) when the catalog entry's HeaderPair is `customizable`. Empty disables stamping for this dimension. Ignored when the catalog entry has a fixed HeaderPair (e.g. LiteLLM, Portkey). Used today by Bifrost: typical values are `x-bf-lh-netbird_user_id` (always-on log metadata) or `x-bf-dim-netbird_user_id` (Prometheus / OTEL — requires the label to be pre-declared in the gateway's `client.prometheus_labels` config).
-	IdentityHeaderUserId *string `json:"identity_header_user_id,omitempty"`
+	// IdentityHeaderUserId Wire header name the proxy stamps with the caller's display identity (user email or peer name) when the catalog entry's HeaderPair is `customizable`. Always present in responses; empty disables stamping for this dimension. Ignored when the catalog entry has a fixed HeaderPair (e.g. LiteLLM, Portkey). Used today by Bifrost: typical values are `x-bf-lh-netbird_user_id` (always-on log metadata) or `x-bf-dim-netbird_user_id` (Prometheus / OTEL — requires the label to be pre-declared in the gateway's `client.prometheus_labels` config).
+	IdentityHeaderUserId string `json:"identity_header_user_id"`
 
 	// MetadataDisabled Whether identity metadata injection is disabled for this provider. When enabled (the default), the proxy stamps the caller's user and authorizing group onto upstream requests as provider-specific metadata (e.g. AWS Bedrock's X-Amzn-Bedrock-Request-Metadata header). Set true to suppress it.
 	MetadataDisabled bool `json:"metadata_disabled"`
@@ -2335,7 +2335,7 @@ type AgentNetworkProviderRequest struct {
 	// Enabled Whether the provider is enabled. Defaults to true on create.
 	Enabled *bool `json:"enabled,omitempty"`
 
-	// ExtraValues Operator-typed values for catalog-declared extra headers (see AgentNetworkProvider.extra_values). When present on a request, the whole map replaces the stored values. Empty strings drop the corresponding key.
+	// ExtraValues Operator-typed values for catalog-declared extra headers (see AgentNetworkProvider.extra_values). When present on a request, the whole map replaces the stored values; when omitted the stored values are left unchanged. Empty strings drop the corresponding key.
 	ExtraValues *map[string]string `json:"extra_values,omitempty"`
 
 	// IdentityHeaderGroups Wire header name for the caller's groups CSV. See AgentNetworkProvider.identity_header_groups. Same omit / empty semantics as `identity_header_user_id`.
@@ -2347,7 +2347,7 @@ type AgentNetworkProviderRequest struct {
 	// MetadataDisabled Disable identity metadata injection (the caller's user + authorizing group) for this provider. Defaults to false (metadata is injected). When omitted on update, the stored value is left unchanged.
 	MetadataDisabled *bool `json:"metadata_disabled,omitempty"`
 
-	// Models Models exposed through this endpoint, with the operator's per-1k input/output prices. Empty means all catalog models are allowed at catalog prices.
+	// Models Models exposed through this endpoint, with the operator's per-1k input/output prices. Empty means all catalog models are allowed at catalog prices. When omitted on update, the stored list is left unchanged; pass an empty list to clear it.
 	Models *[]AgentNetworkProviderModel `json:"models,omitempty"`
 
 	// Name Display name for the provider.
@@ -2393,19 +2393,22 @@ type AgentNetworkSettings struct {
 	UpdatedAt *time.Time `json:"updated_at,omitempty"`
 }
 
-// AgentNetworkSettingsRequest Mutable account-level Agent Network settings. Cluster and subdomain are immutable and not accepted here.
+// AgentNetworkSettingsRequest Partial update of the account-level Agent Network settings. Every field is optional; omitted fields keep their current values. `cluster` additionally bootstraps the per-account settings row when the account does not have one yet.
 type AgentNetworkSettingsRequest struct {
-	// AccessLogRetentionDays Days to retain full access-log rows; older rows are swept. 0 or less means keep indefinitely.
+	// AccessLogRetentionDays Days to retain full access-log rows; older rows are swept. 0 or less means keep indefinitely. Omitted keeps the current value.
 	AccessLogRetentionDays *int `json:"access_log_retention_days,omitempty"`
 
-	// EnableLogCollection Whether per-request access-log entries are collected for this account's agent-network traffic.
-	EnableLogCollection bool `json:"enable_log_collection"`
+	// Cluster Address of the NetBird proxy cluster fronting this account's agent-network endpoint. When the account has no settings row yet, providing it bootstraps the row (assigning the subdomain that forms the agent endpoint, with log collection enabled and the default retention). The cluster is immutable once assigned — later updates must omit it or send the assigned value; any other value is rejected.
+	Cluster *string `json:"cluster,omitempty"`
 
-	// EnablePromptCollection Master switch for request/response prompt capture.
-	EnablePromptCollection bool `json:"enable_prompt_collection"`
+	// EnableLogCollection Whether per-request access-log entries are collected for this account's agent-network traffic. Omitted keeps the current value.
+	EnableLogCollection *bool `json:"enable_log_collection,omitempty"`
 
-	// RedactPii Whether captured prompts have PII redacted.
-	RedactPii bool `json:"redact_pii"`
+	// EnablePromptCollection Master switch for request/response prompt capture. Omitted keeps the current value.
+	EnablePromptCollection *bool `json:"enable_prompt_collection,omitempty"`
+
+	// RedactPii Whether captured prompts have PII redacted. Omitted keeps the current value.
+	RedactPii *bool `json:"redact_pii,omitempty"`
 }
 
 // AgentNetworkUsageBucket One aggregated agent-network usage time bucket (UTC). The bucket width is set by the request's granularity.

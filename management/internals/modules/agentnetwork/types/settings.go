@@ -66,13 +66,46 @@ func (s *Settings) ToAPIResponse() *api.AgentNetworkSettings {
 	}
 }
 
-// FromAPIRequest applies the mutable settings fields from the request. Cluster
-// and Subdomain are immutable and intentionally not touched here.
-func (s *Settings) FromAPIRequest(req *api.AgentNetworkSettingsRequest) {
-	s.EnableLogCollection = req.EnableLogCollection
-	s.EnablePromptCollection = req.EnablePromptCollection
-	s.RedactPii = req.RedactPii
-	if req.AccessLogRetentionDays != nil {
-		s.AccessLogRetentionDays = *req.AccessLogRetentionDays
+// SettingsUpdate is a partial update of the mutable settings fields.
+// Nil fields were not sent and leave the stored value untouched.
+// Cluster never mutates an existing row — it only bootstraps the row
+// when the account has none yet, and otherwise must match the
+// assigned cluster (see Manager.UpdateSettings).
+type SettingsUpdate struct {
+	Cluster                *string
+	EnableLogCollection    *bool
+	EnablePromptCollection *bool
+	RedactPii              *bool
+	AccessLogRetentionDays *int
+}
+
+// SettingsUpdateFromAPIRequest converts the wire request into the domain
+// partial update. The request's optional fields map 1:1 onto the nil-able
+// fields.
+func SettingsUpdateFromAPIRequest(req *api.AgentNetworkSettingsRequest) *SettingsUpdate {
+	return &SettingsUpdate{
+		Cluster:                req.Cluster,
+		EnableLogCollection:    req.EnableLogCollection,
+		EnablePromptCollection: req.EnablePromptCollection,
+		RedactPii:              req.RedactPii,
+		AccessLogRetentionDays: req.AccessLogRetentionDays,
+	}
+}
+
+// Apply overlays the set (non-nil) fields onto the settings row. Cluster is
+// deliberately not applied — it participates only in bootstrap and the
+// immutability check, never in a field update.
+func (u *SettingsUpdate) Apply(s *Settings) {
+	if u.EnableLogCollection != nil {
+		s.EnableLogCollection = *u.EnableLogCollection
+	}
+	if u.EnablePromptCollection != nil {
+		s.EnablePromptCollection = *u.EnablePromptCollection
+	}
+	if u.RedactPii != nil {
+		s.RedactPii = *u.RedactPii
+	}
+	if u.AccessLogRetentionDays != nil {
+		s.AccessLogRetentionDays = *u.AccessLogRetentionDays
 	}
 }

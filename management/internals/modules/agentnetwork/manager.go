@@ -71,7 +71,7 @@ type Manager interface {
 	DeleteBudgetRule(ctx context.Context, accountID, userID, ruleID string) error
 
 	GetSettings(ctx context.Context, accountID, userID string) (*types.Settings, error)
-	UpdateSettings(ctx context.Context, userID string, settings *types.Settings) (*types.Settings, error)
+	UpdateSettings(ctx context.Context, accountID, userID string, update *types.SettingsUpdate) (*types.Settings, error)
 
 	ListConsumption(ctx context.Context, accountID, userID string) ([]*types.Consumption, error)
 	ListAccessLogs(ctx context.Context, accountID, userID string, filter types.AgentNetworkAccessLogFilter) ([]*types.AgentNetworkAccessLog, int64, error)
@@ -554,40 +554,65 @@ func (m *managerImpl) DeleteBudgetRule(ctx context.Context, accountID, userID, r
 	return nil
 }
 
-// UpdateSettings applies the mutable account-level settings — the collection
-// toggles — onto the existing row. Cluster and Subdomain are immutable and are
-// preserved from the persisted row regardless of the input. Because the
-// collection toggles change the synthesised service config (prompt-capture
-// gating, access-log emission), a reconcile is triggered so the proxy and peer
-// network maps converge on the new state.
-func (m *managerImpl) UpdateSettings(ctx context.Context, userID string, settings *types.Settings) (*types.Settings, error) {
-	if err := m.requirePermission(ctx, settings.AccountID, userID, operations.Update); err != nil {
+// UpdateSettings applies a partial update of the mutable account-level
+// settings — the collection toggles — onto the existing row; nil fields keep
+// their stored values. When the account has no settings row yet, a non-empty
+// update.Cluster bootstraps one (same path as first provider create); without
+// it the update fails with NotFound. On an existing row the cluster and
+// subdomain are immutable: a differing update.Cluster is rejected rather than
+// silently ignored so callers never observe a value other than what they sent.
+// Because the collection toggles change the synthesised service config
+// (prompt-capture gating, access-log emission), a reconcile is triggered so
+// the proxy and peer network maps converge on the new state.
+func (m *managerImpl) UpdateSettings(ctx context.Context, accountID, userID string, update *types.SettingsUpdate) (*types.Settings, error) {
+	if err := m.requirePermission(ctx, accountID, userID, operations.Update); err != nil {
 		return nil, err
 	}
 
-	existing, err := m.store.GetAgentNetworkSettings(ctx, store.LockingStrengthUpdate, settings.AccountID)
-	if err != nil {
+	requestedCluster := ""
+	if update.Cluster != nil {
+		requestedCluster = strings.TrimSpace(*update.Cluster)
+	}
+
+	settings, err := m.store.GetAgentNetworkSettings(ctx, store.LockingStrengthUpdate, accountID)
+	switch {
+	case err == nil:
+		if requestedCluster != "" && requestedCluster != settings.Cluster {
+			return nil, status.Errorf(status.InvalidArgument, "cluster is immutable once assigned (current: %s)", settings.Cluster)
+		}
+	case isNotFound(err):
+		if requestedCluster == "" {
+			return nil, status.Errorf(status.NotFound, "agent network settings have not been bootstrapped yet; pass cluster to bootstrap them, or create a provider with bootstrap_cluster set")
+		}
+		settings, err = m.bootstrapSettingsIfNeeded(ctx, accountID, requestedCluster)
+		if err != nil {
+			return nil, err
+		}
+	default:
 		return nil, fmt.Errorf("get agent network settings: %w", err)
 	}
 
-	existing.EnableLogCollection = settings.EnableLogCollection
-	existing.EnablePromptCollection = settings.EnablePromptCollection
-	existing.RedactPii = settings.RedactPii
-	existing.AccessLogRetentionDays = settings.AccessLogRetentionDays
-	existing.UpdatedAt = time.Now().UTC()
+	update.Apply(settings)
+	settings.UpdatedAt = time.Now().UTC()
 
-	if err := m.store.SaveAgentNetworkSettings(ctx, existing); err != nil {
+	if err := m.store.SaveAgentNetworkSettings(ctx, settings); err != nil {
 		return nil, fmt.Errorf("save agent network settings: %w", err)
 	}
 
-	m.accountManager.StoreEvent(ctx, userID, settings.AccountID, settings.AccountID, activity.AgentNetworkSettingsUpdated, map[string]any{
-		"log_collection":    existing.EnableLogCollection,
-		"prompt_collection": existing.EnablePromptCollection,
-		"redact_pii":        existing.RedactPii,
+	m.accountManager.StoreEvent(ctx, userID, accountID, accountID, activity.AgentNetworkSettingsUpdated, map[string]any{
+		"log_collection":    settings.EnableLogCollection,
+		"prompt_collection": settings.EnablePromptCollection,
+		"redact_pii":        settings.RedactPii,
 	})
-	m.reconcile(ctx, settings.AccountID)
+	m.reconcile(ctx, accountID)
 
-	return existing, nil
+	return settings, nil
+}
+
+// isNotFound reports whether err is a status.NotFound error.
+func isNotFound(err error) bool {
+	var sErr *status.Error
+	return errors.As(err, &sErr) && sErr.Type() == status.NotFound
 }
 
 // validateProviderRefs ensures every destination provider id refers to a
@@ -881,8 +906,8 @@ func (*mockManager) GetSettings(_ context.Context, _, _ string) (*types.Settings
 	return nil, status.Errorf(status.NotFound, "agent network settings not found")
 }
 
-func (*mockManager) UpdateSettings(_ context.Context, _ string, s *types.Settings) (*types.Settings, error) {
-	return s, nil
+func (*mockManager) UpdateSettings(_ context.Context, _, _ string, _ *types.SettingsUpdate) (*types.Settings, error) {
+	return &types.Settings{}, nil
 }
 
 func (*mockManager) ListConsumption(_ context.Context, _, _ string) ([]*types.Consumption, error) {
